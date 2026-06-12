@@ -72,8 +72,13 @@ function registerHandlers(deps: HandlerDeps): void {
 
 	client.addEventHandler(
 		(event: NewMessageEvent) => {
+			if (event.isPrivate !== true) return
 			const msg = event.message
-			const chatId = msg.chatId?.toString() ?? "unknown"
+			const chatId = msg.chatId?.toString()
+			if (!chatId) {
+				logger.warn({ id: msg.id }, "new message without chatId, skipping")
+				return
+			}
 			const from = upsertAndDisplaySender(cache, msg.sender)
 
 			const inserted = cache.insertMessage({
@@ -112,8 +117,13 @@ function registerHandlers(deps: HandlerDeps): void {
 
 	client.addEventHandler(
 		(event: EditedMessageEvent) => {
+			if (event.isPrivate !== true) return
 			const msg = event.message
-			const chatId = msg.chatId?.toString() ?? "unknown"
+			const chatId = msg.chatId?.toString()
+			if (!chatId) {
+				logger.warn({ id: msg.id }, "edited message without chatId, skipping")
+				return
+			}
 			const from = upsertAndDisplaySender(cache, msg.sender)
 
 			const outcome = cache.recordEdit({
@@ -122,7 +132,7 @@ function registerHandlers(deps: HandlerDeps): void {
 				sender_id: msg.senderId?.toString() ?? null,
 				text: msg.message || null,
 				media_kind: msg.media?.className ?? null,
-				view_once: false,
+				view_once: isViewOnce(msg),
 				sent_at: msg.date ? msg.date * 1000 : null,
 				observed_at: Date.now(),
 			})
@@ -140,7 +150,6 @@ function registerHandlers(deps: HandlerDeps): void {
 			if (outcome.kind === "revised") {
 				void notifier.notifyEdit({
 					msgId: msg.id,
-					chatId,
 					sender: from,
 					before: outcome.before,
 					after: msg.message || null,

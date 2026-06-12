@@ -4,6 +4,15 @@ import type { TelegramClient } from "telegram"
 import type { MessageSnapshot } from "./cache.ts"
 import type { Logger } from "./logger.ts"
 
+// Telegram outbound limits. Going over silently fails the send.
+const MAX_MESSAGE_LEN = 4096
+const MAX_CAPTION_LEN = 1024
+
+function truncate(text: string, max: number): string {
+	if (text.length <= max) return text
+	return `${text.slice(0, max - 1)}…`
+}
+
 export interface DeleteNotification {
 	msgId: number
 	sender: string
@@ -13,7 +22,6 @@ export interface DeleteNotification {
 
 export interface EditNotification {
 	msgId: number
-	chatId: string
 	sender: string
 	before: string | null
 	after: string | null
@@ -31,7 +39,7 @@ export interface NotifierDeps {
 	mediaDir: string
 }
 
-function formatDelete(n: DeleteNotification): string {
+export function formatDelete(n: DeleteNotification): string {
 	const tag = n.via === "reconcile" ? " (silent)" : ""
 	const viewOnce = n.snapshot.view_once ? "🔥 view-once " : ""
 	const lines: string[] = [`🗑️ ${viewOnce}Deleted by ${n.sender}${tag}`]
@@ -41,7 +49,7 @@ function formatDelete(n: DeleteNotification): string {
 	return lines.join("\n")
 }
 
-function formatEdit(n: EditNotification): string {
+export function formatEdit(n: EditNotification): string {
 	return [
 		`✏️ Edited by ${n.sender}`,
 		"",
@@ -70,14 +78,16 @@ export function createNotifier(deps: NotifierDeps): Notifier {
 	return {
 		async notifyDelete(n: DeleteNotification): Promise<void> {
 			try {
-				const caption = formatDelete(n)
+				const body = formatDelete(n)
 				if (n.snapshot.media_path) {
 					await client.sendFile(peer, {
 						file: join(mediaDir, n.snapshot.media_path),
-						caption,
+						caption: truncate(body, MAX_CAPTION_LEN),
 					})
 				} else {
-					await client.sendMessage(peer, { message: caption })
+					await client.sendMessage(peer, {
+						message: truncate(body, MAX_MESSAGE_LEN),
+					})
 				}
 			} catch (err) {
 				logger.warn({ msgId: n.msgId, err }, "notify delete failed")
@@ -85,7 +95,9 @@ export function createNotifier(deps: NotifierDeps): Notifier {
 		},
 		async notifyEdit(n: EditNotification): Promise<void> {
 			try {
-				await client.sendMessage(peer, { message: formatEdit(n) })
+				await client.sendMessage(peer, {
+					message: truncate(formatEdit(n), MAX_MESSAGE_LEN),
+				})
 			} catch (err) {
 				logger.warn({ msgId: n.msgId, err }, "notify edit failed")
 			}
