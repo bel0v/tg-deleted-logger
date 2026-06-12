@@ -14,6 +14,9 @@ import { StringSession } from "telegram/sessions/index.js"
 import { loadConfig } from "./config.ts"
 import { insertMessage, markDeleted, recordEdit } from "./db.ts"
 import { logger } from "./logger.ts"
+import { startReconcileLoop } from "./reconciler.ts"
+
+const DEFAULT_RECONCILE_INTERVAL_MS = 10 * 60 * 1000
 
 async function main(): Promise<void> {
 	const config = loadConfig()
@@ -79,8 +82,15 @@ async function main(): Promise<void> {
 		}
 	}, new DeletedMessage({}))
 
+	const intervalMs = Number(
+		process.env.TG_RECONCILE_INTERVAL_MS ?? DEFAULT_RECONCILE_INTERVAL_MS,
+	)
+	const stopReconcile = startReconcileLoop(client, intervalMs)
+	logger.info({ intervalMs }, "reconcile loop started")
+
 	const shutdown = async (signal: string): Promise<void> => {
 		logger.info({ signal }, "shutdown")
+		await stopReconcile()
 		await client.disconnect()
 		process.exit(0)
 	}

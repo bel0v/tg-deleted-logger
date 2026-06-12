@@ -121,6 +121,24 @@ interface CurrentRow {
 	media_kind: string | null
 }
 
+const listChatsStmt = db.prepare(`
+	SELECT DISTINCT chat_id FROM messages WHERE deleted_at IS NULL
+`)
+
+export function listChatsWithLiveMessages(): string[] {
+	const rows = listChatsStmt.all() as { chat_id: string }[]
+	return rows.map((r) => r.chat_id)
+}
+
+const listLiveIdsStmt = db.prepare<{ chat_id: string }>(`
+	SELECT msg_id FROM messages WHERE chat_id = @chat_id AND deleted_at IS NULL
+`)
+
+export function listLiveMessageIds(chatId: string): number[] {
+	const rows = listLiveIdsStmt.all({ chat_id: chatId }) as { msg_id: number }[]
+	return rows.map((r) => r.msg_id)
+}
+
 export const recordEdit = db.transaction((params: EditParams): EditOutcome => {
 	const current = getMessageStmt.get({
 		chat_id: params.chat_id,
