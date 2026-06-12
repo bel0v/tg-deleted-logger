@@ -8,6 +8,7 @@ import { NewMessage } from "telegram/events/index.js"
 import { StringSession } from "telegram/sessions/index.js"
 
 import { loadConfig } from "./config.js"
+import { insertMessage, markDeleted } from "./db.js"
 
 async function main(): Promise<void> {
 	const config = loadConfig()
@@ -26,15 +27,27 @@ async function main(): Promise<void> {
 	client.addEventHandler(
 		(event: NewMessageEvent) => {
 			const msg = event.message
-			console.log(`[new] chat=${String(msg.chatId)} id=${msg.id}`)
-			// TODO: layer 1 — persist to SQLite
+			const chatId = msg.chatId?.toString() ?? "unknown"
+			const inserted = insertMessage({
+				chat_id: chatId,
+				msg_id: msg.id,
+				sender_id: msg.senderId?.toString() ?? null,
+				text: msg.message || null,
+				media_kind: msg.media?.className ?? null,
+				received_at: Date.now(),
+			})
+			console.log(`[new] chat=${chatId} id=${msg.id} stored=${inserted}`)
 		},
 		new NewMessage({ incoming: true }),
 	)
 
 	client.addEventHandler((event: DeletedMessageEvent) => {
-		console.log(`[del] ids=${event.deletedIds.join(",")}`)
-		// TODO: layer 1 — mark rows deleted in SQLite
+		const results = markDeleted(event.deletedIds, Date.now())
+		for (const r of results) {
+			console.log(
+				`[del] id=${r.msg_id} ${r.matched ? "marked" : "no-match (was offline?)"}`,
+			)
+		}
 	}, new DeletedMessage({}))
 
 	const shutdown = async (signal: string): Promise<void> => {
