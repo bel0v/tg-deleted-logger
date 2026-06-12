@@ -1,19 +1,24 @@
 import type { TelegramClient } from "telegram"
 
-import {
-	listChatsWithLiveMessages,
-	listLiveMessageIds,
-	markDeleted,
-} from "./db.ts"
-import { logger } from "./logger.ts"
+import type { DbApi } from "./db.ts"
+import type { Logger } from "./logger.ts"
 
 const BATCH_SIZE = 100
 
+export interface ReconcileOptions {
+	client: TelegramClient
+	db: DbApi
+	logger: Logger
+	intervalMs: number
+}
+
 async function reconcileChat(
-	client: TelegramClient,
+	deps: { client: TelegramClient; db: DbApi; logger: Logger },
 	chatId: string,
 ): Promise<void> {
-	const liveIds = listLiveMessageIds(chatId)
+	const { client, db, logger } = deps
+
+	const liveIds = db.listLiveMessageIds(chatId)
 	if (liveIds.length === 0) return
 
 	const peerId = Number(chatId)
@@ -41,7 +46,7 @@ async function reconcileChat(
 
 	if (missing.length === 0) return
 
-	const results = markDeleted(missing, Date.now())
+	const results = db.markDeleted(missing, Date.now())
 	for (const r of results) {
 		if (r.matched) {
 			logger.info(
@@ -53,10 +58,11 @@ async function reconcileChat(
 }
 
 async function reconcileOnce(
-	client: TelegramClient,
+	deps: { client: TelegramClient; db: DbApi; logger: Logger },
 	signal: AbortSignal,
 ): Promise<void> {
-	const chats = listChatsWithLiveMessages()
+	const { db, logger } = deps
+	const chats = db.listChatsWithLiveMessages()
 	logger.debug({ chats: chats.length }, "reconcile pass start")
 
 	for (const chatId of chats) {
@@ -65,7 +71,7 @@ async function reconcileOnce(
 			return
 		}
 		try {
-			await reconcileChat(client, chatId)
+			await reconcileChat(deps, chatId)
 		} catch (err) {
 			logger.warn({ chat: chatId, err }, "reconcile chat failed")
 		}
@@ -73,15 +79,16 @@ async function reconcileOnce(
 }
 
 export function startReconcileLoop(
-	client: TelegramClient,
-	intervalMs: number,
+	opts: ReconcileOptions,
 ): () => Promise<void> {
+	const { client, db, logger, intervalMs } = opts
+	const deps = { client, db, logger }
 	const controller = new AbortController()
 	let inFlight: Promise<void> | null = null
 
 	const tick = (): void => {
 		if (controller.signal.aborted || inFlight) return
-		inFlight = reconcileOnce(client, controller.signal)
+		inFlight = reconcileOnce(deps, controller.signal)
 			.catch((err: unknown) => {
 				logger.error({ err }, "reconcile pass failed")
 			})

@@ -13,30 +13,22 @@ import { NewMessage } from "telegram/events/index.js"
 import { StringSession } from "telegram/sessions/index.js"
 
 import { loadConfig } from "./config.ts"
-import {
-	closeDb,
-	displayName,
-	getMessageSender,
-	insertMessage,
-	markDeleted,
-	recordEdit,
-	upsertUser,
-} from "./db.ts"
-import { logger } from "./logger.ts"
+import { createDb, type DbApi, displayName } from "./db.ts"
+import { createLogger, type Logger } from "./logger.ts"
 import { startReconcileLoop } from "./reconciler.ts"
 
 const DEFAULT_RECONCILE_INTERVAL_MS = 10 * 60 * 1000
 const MIN_RECONCILE_INTERVAL_MS = 1000
 const SHUTDOWN_TIMEOUT_MS = 10_000
 
-function recordSender(sender: Entity | undefined): string {
+function recordSender(db: DbApi, sender: Entity | undefined): string {
 	if (!(sender instanceof Api.User)) return "(unknown)"
 	const identity = {
 		username: sender.username ?? null,
 		first_name: sender.firstName ?? null,
 		last_name: sender.lastName ?? null,
 	}
-	upsertUser({
+	db.upsertUser({
 		user_id: sender.id.toString(),
 		...identity,
 		updated_at: Date.now(),
@@ -44,7 +36,7 @@ function recordSender(sender: Entity | undefined): string {
 	return displayName(identity)
 }
 
-function parseIntervalMs(raw: string | undefined): number {
+function parseIntervalMs(raw: string | undefined, logger: Logger): number {
 	if (raw === undefined) {
 		return DEFAULT_RECONCILE_INTERVAL_MS
 	}
@@ -61,6 +53,18 @@ function parseIntervalMs(raw: string | undefined): number {
 
 async function main(): Promise<void> {
 	const config = loadConfig()
+	const logger = createLogger()
+	const db = createDb()
+
+	process.on("uncaughtException", (err: Error) => {
+		logger.fatal({ err }, "uncaughtException")
+		process.exit(1)
+	})
+	process.on("unhandledRejection", (reason: unknown) => {
+		logger.fatal({ reason }, "unhandledRejection")
+		process.exit(1)
+	})
+
 	const client = new TelegramClient(
 		new StringSession(config.session),
 		config.apiId,
@@ -77,9 +81,9 @@ async function main(): Promise<void> {
 		(event: NewMessageEvent) => {
 			const msg = event.message
 			const chatId = msg.chatId?.toString() ?? "unknown"
-			const from = recordSender(msg.sender)
+			const from = recordSender(db, msg.sender)
 
-			const inserted = insertMessage({
+			const inserted = db.insertMessage({
 				chat_id: chatId,
 				msg_id: msg.id,
 				sender_id: msg.senderId?.toString() ?? null,
@@ -100,9 +104,9 @@ async function main(): Promise<void> {
 		(event: EditedMessageEvent) => {
 			const msg = event.message
 			const chatId = msg.chatId?.toString() ?? "unknown"
-			const from = recordSender(msg.sender)
+			const from = recordSender(db, msg.sender)
 
-			const outcome = recordEdit({
+			const outcome = db.recordEdit({
 				chat_id: chatId,
 				msg_id: msg.id,
 				sender_id: msg.senderId?.toString() ?? null,
@@ -120,9 +124,9 @@ async function main(): Promise<void> {
 	)
 
 	client.addEventHandler((event: DeletedMessageEvent) => {
-		const results = markDeleted(event.deletedIds, Date.now())
+		const results = db.markDeleted(event.deletedIds, Date.now())
 		for (const r of results) {
-			const sender = r.matched ? getMessageSender(r.msg_id) : undefined
+			const sender = r.matched ? db.getMessageSender(r.msg_id) : undefined
 			const from = sender ? displayName(sender) : "(unknown)"
 			logger.info(
 				{ event: "delete", id: r.msg_id, matched: r.matched, from },
@@ -131,8 +135,11 @@ async function main(): Promise<void> {
 		}
 	}, new DeletedMessage({}))
 
-	const intervalMs = parseIntervalMs(process.env.TG_RECONCILE_INTERVAL_MS)
-	const stopReconcile = startReconcileLoop(client, intervalMs)
+	const intervalMs = parseIntervalMs(
+		process.env.TG_RECONCILE_INTERVAL_MS,
+		logger,
+	)
+	const stopReconcile = startReconcileLoop({ client, db, logger, intervalMs })
 	logger.info({ intervalMs }, "reconcile loop started")
 
 	let shuttingDown = false
@@ -147,7 +154,7 @@ async function main(): Promise<void> {
 		const cleanup = async (): Promise<"ok"> => {
 			await stopReconcile()
 			await client.disconnect()
-			closeDb()
+			db.close()
 			return "ok"
 		}
 
@@ -175,16 +182,7 @@ async function main(): Promise<void> {
 	})
 }
 
-process.on("uncaughtException", (err: Error) => {
-	logger.fatal({ err }, "uncaughtException")
-	process.exit(1)
-})
-process.on("unhandledRejection", (reason: unknown) => {
-	logger.fatal({ reason }, "unhandledRejection")
-	process.exit(1)
-})
-
 main().catch((err: unknown) => {
-	logger.fatal({ err }, "main loop crashed")
+	console.error("[fatal]", err)
 	process.exit(1)
 })

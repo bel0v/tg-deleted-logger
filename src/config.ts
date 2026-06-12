@@ -1,5 +1,5 @@
 import fs from "node:fs"
-import "dotenv/config"
+import dotenv from "dotenv"
 
 export interface Config {
 	apiId: number
@@ -8,6 +8,8 @@ export interface Config {
 }
 
 export function loadConfig(): Config {
+	dotenv.config({ quiet: true })
+
 	const apiId = Number(process.env.TG_API_ID)
 	const apiHash = process.env.TG_API_HASH
 	if (!Number.isInteger(apiId) || !apiHash) {
