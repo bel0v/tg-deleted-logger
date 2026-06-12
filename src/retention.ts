@@ -1,3 +1,5 @@
+import { unlinkSync } from "node:fs"
+import { join } from "node:path"
 import type { CacheApi } from "./cache.ts"
 import {
 	DEFAULT_RETENTION_DAYS,
@@ -25,11 +27,13 @@ function parseRetentionDays(raw: string | undefined, logger: Logger): number {
 interface RetentionDeps {
 	logger: Logger
 	cache: CacheApi
+	mediaDir: string
 }
 
 export function startRetentionLoop({
 	logger,
 	cache,
+	mediaDir,
 }: RetentionDeps): () => void {
 	const retentionDays = parseRetentionDays(
 		process.env.TG_RETENTION_DAYS,
@@ -38,11 +42,25 @@ export function startRetentionLoop({
 	const runPurge = (): void => {
 		const cutoff = Date.now() - retentionDays * Time.DAY
 		const result = cache.purgeOlderThan(cutoff)
+
+		let mediaUnlinked = 0
+		let mediaFailed = 0
+		for (const relPath of result.mediaPaths) {
+			try {
+				unlinkSync(join(mediaDir, relPath))
+				mediaUnlinked++
+			} catch (err) {
+				mediaFailed++
+				logger.warn({ path: relPath, err }, "media unlink failed")
+			}
+		}
+
 		if (result.messages > 0) {
 			logger.info(
 				{
 					messages: result.messages,
-					mediaPaths: result.mediaPaths.length,
+					mediaUnlinked,
+					mediaFailed,
 					retentionDays,
 					cutoff,
 				},

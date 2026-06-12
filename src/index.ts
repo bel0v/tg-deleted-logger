@@ -18,9 +18,12 @@ import {
 	MIN_RECONCILE_INTERVAL_MS,
 } from "./constants.ts"
 import { createLogger, type Logger } from "./logger.ts"
+import { downloadMessageMedia, isViewOnce, shouldDownload } from "./media.ts"
 import { startReconcileLoop } from "./reconciler.ts"
 import { startRetentionLoop } from "./retention.ts"
 import { registerShutdown } from "./shutdown.ts"
+
+const DEFAULT_MEDIA_DIR = "data/media"
 
 function upsertAndDisplaySender(
 	cache: CacheApi,
@@ -58,10 +61,11 @@ interface HandlerDeps {
 	client: TelegramClient
 	cache: CacheApi
 	logger: Logger
+	mediaDir: string
 }
 
 function registerHandlers(deps: HandlerDeps): void {
-	const { client, cache, logger } = deps
+	const { client, cache, logger, mediaDir } = deps
 
 	client.addEventHandler(
 		(event: NewMessageEvent) => {
@@ -75,7 +79,7 @@ function registerHandlers(deps: HandlerDeps): void {
 				sender_id: msg.senderId?.toString() ?? null,
 				text: msg.message || null,
 				media_kind: msg.media?.className ?? null,
-				view_once: false,
+				view_once: isViewOnce(msg),
 				sent_at: msg.date ? msg.date * 1000 : null,
 				received_at: Date.now(),
 			})
@@ -83,6 +87,22 @@ function registerHandlers(deps: HandlerDeps): void {
 				{ event: "new", chat: chatId, id: msg.id, from, stored: inserted },
 				"new message",
 			)
+
+			if (inserted && shouldDownload(msg.media)) {
+				downloadMessageMedia({ client, message: msg, mediaDir })
+					.then((filename) => {
+						if (filename) {
+							cache.setMediaPath(chatId, msg.id, filename)
+							logger.info(
+								{ event: "media", id: msg.id, filename },
+								"media downloaded",
+							)
+						}
+					})
+					.catch((err: unknown) => {
+						logger.warn({ id: msg.id, err }, "media download failed")
+					})
+			}
 		},
 		new NewMessage({ incoming: true }),
 	)
@@ -156,7 +176,8 @@ async function main(): Promise<void> {
 
 	await client.invoke(new Api.account.UpdateStatus({ offline: true }))
 
-	registerHandlers({ client, cache, logger })
+	const mediaDir = process.env.TG_MEDIA_DIR ?? DEFAULT_MEDIA_DIR
+	registerHandlers({ client, cache, logger, mediaDir })
 
 	const reconcileIntervalMs = parseIntervalMs(
 		process.env.TG_RECONCILE_INTERVAL_MS,
@@ -168,7 +189,7 @@ async function main(): Promise<void> {
 		logger,
 		intervalMs: reconcileIntervalMs,
 	})
-	const stopRetention = startRetentionLoop({ logger, cache })
+	const stopRetention = startRetentionLoop({ logger, cache, mediaDir })
 
 	registerShutdown({ logger, stopReconcile, stopRetention, client })
 }
