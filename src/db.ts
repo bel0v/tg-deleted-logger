@@ -22,6 +22,15 @@ db.exec(`
 	);
 	CREATE INDEX IF NOT EXISTS idx_messages_msg_id     ON messages(msg_id);
 	CREATE INDEX IF NOT EXISTS idx_messages_deleted_at ON messages(deleted_at);
+
+	CREATE TABLE IF NOT EXISTS message_revisions (
+		chat_id     TEXT    NOT NULL,
+		msg_id      INTEGER NOT NULL,
+		text        TEXT,
+		observed_at INTEGER NOT NULL,
+		PRIMARY KEY (chat_id, msg_id, observed_at)
+	);
+	CREATE INDEX IF NOT EXISTS idx_revisions_msg_id ON message_revisions(msg_id);
 `)
 
 export interface InsertParams {
@@ -69,3 +78,85 @@ export function markDeleted(
 		return { msg_id, matched: changes > 0 }
 	})
 }
+
+const getMessageStmt = db.prepare<{ chat_id: string; msg_id: number }>(`
+	SELECT text, media_kind FROM messages
+	WHERE chat_id = @chat_id AND msg_id = @msg_id
+`)
+
+const insertRevisionStmt = db.prepare<{
+	chat_id: string
+	msg_id: number
+	text: string | null
+	observed_at: number
+}>(`
+	INSERT INTO message_revisions (chat_id, msg_id, text, observed_at)
+	VALUES (@chat_id, @msg_id, @text, @observed_at)
+`)
+
+const updateMessageStmt = db.prepare<{
+	chat_id: string
+	msg_id: number
+	text: string | null
+	media_kind: string | null
+}>(`
+	UPDATE messages
+	SET text = @text, media_kind = @media_kind
+	WHERE chat_id = @chat_id AND msg_id = @msg_id
+`)
+
+export interface EditParams {
+	chat_id: string
+	msg_id: number
+	sender_id: string | null
+	text: string | null
+	media_kind: string | null
+	observed_at: number
+}
+
+export type EditOutcome = "first-seen" | "no-change" | "revised"
+
+interface CurrentRow {
+	text: string | null
+	media_kind: string | null
+}
+
+export const recordEdit = db.transaction((params: EditParams): EditOutcome => {
+	const current = getMessageStmt.get({
+		chat_id: params.chat_id,
+		msg_id: params.msg_id,
+	}) as CurrentRow | undefined
+
+	if (!current) {
+		insertMessage({
+			chat_id: params.chat_id,
+			msg_id: params.msg_id,
+			sender_id: params.sender_id,
+			text: params.text,
+			media_kind: params.media_kind,
+			received_at: params.observed_at,
+		})
+		return "first-seen"
+	}
+
+	if (
+		current.text === params.text &&
+		current.media_kind === params.media_kind
+	) {
+		return "no-change"
+	}
+
+	insertRevisionStmt.run({
+		chat_id: params.chat_id,
+		msg_id: params.msg_id,
+		text: current.text,
+		observed_at: params.observed_at,
+	})
+	updateMessageStmt.run({
+		chat_id: params.chat_id,
+		msg_id: params.msg_id,
+		text: params.text,
+		media_kind: params.media_kind,
+	})
+	return "revised"
+})
