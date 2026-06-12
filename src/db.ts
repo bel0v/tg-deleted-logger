@@ -119,7 +119,10 @@ export function createDb(options: DbOptions = {}): DbApi {
 		WHERE msg_id = @msg_id AND deleted_at IS NULL
 	`)
 
-	const getMessageStmt = db.prepare<{ chat_id: string; msg_id: number }>(`
+	const getMessageStmt = db.prepare<
+		{ chat_id: string; msg_id: number },
+		CurrentRow
+	>(`
 		SELECT text, media_kind FROM messages
 		WHERE chat_id = @chat_id AND msg_id = @msg_id
 	`)
@@ -155,7 +158,7 @@ export function createDb(options: DbOptions = {}): DbApi {
 			updated_at = excluded.updated_at
 	`)
 
-	const getMessageSenderStmt = db.prepare<{ msg_id: number }>(`
+	const getMessageSenderStmt = db.prepare<{ msg_id: number }, UserIdentity>(`
 		SELECT u.username, u.first_name, u.last_name
 		FROM messages m
 		LEFT JOIN users u ON u.user_id = m.sender_id
@@ -163,11 +166,11 @@ export function createDb(options: DbOptions = {}): DbApi {
 		LIMIT 1
 	`)
 
-	const listChatsStmt = db.prepare(`
+	const listChatsStmt = db.prepare<[], { chat_id: string }>(`
 		SELECT DISTINCT chat_id FROM messages WHERE deleted_at IS NULL
 	`)
 
-	const listLiveIdsStmt = db.prepare<{ chat_id: string }>(`
+	const listLiveIdsStmt = db.prepare<{ chat_id: string }, { msg_id: number }>(`
 		SELECT msg_id FROM messages WHERE chat_id = @chat_id AND deleted_at IS NULL
 	`)
 
@@ -190,7 +193,7 @@ export function createDb(options: DbOptions = {}): DbApi {
 		const current = getMessageStmt.get({
 			chat_id: params.chat_id,
 			msg_id: params.msg_id,
-		}) as CurrentRow | undefined
+		})
 
 		if (!current) {
 			insertMessage({
@@ -234,14 +237,10 @@ export function createDb(options: DbOptions = {}): DbApi {
 		upsertUser: (params) => {
 			upsertUserStmt.run(params)
 		},
-		getMessageSender: (msgId) =>
-			getMessageSenderStmt.get({ msg_id: msgId }) as UserIdentity | undefined,
-		listChatsWithLiveMessages: () =>
-			(listChatsStmt.all() as { chat_id: string }[]).map((r) => r.chat_id),
+		getMessageSender: (msgId) => getMessageSenderStmt.get({ msg_id: msgId }),
+		listChatsWithLiveMessages: () => listChatsStmt.all().map((r) => r.chat_id),
 		listLiveMessageIds: (chatId) =>
-			(listLiveIdsStmt.all({ chat_id: chatId }) as { msg_id: number }[]).map(
-				(r) => r.msg_id,
-			),
+			listLiveIdsStmt.all({ chat_id: chatId }).map((r) => r.msg_id),
 		close: () => {
 			db.close()
 		},

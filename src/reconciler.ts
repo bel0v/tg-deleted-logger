@@ -1,9 +1,23 @@
 import type { TelegramClient } from "telegram"
+import { FloodWaitError } from "telegram/errors/index.js"
 
 import type { DbApi } from "./db.ts"
 import type { Logger } from "./logger.ts"
 
 const BATCH_SIZE = 100
+
+// GramJS types getMessages's return as Api.Message[], but at runtime Telegram
+// returns Api.MessageEmpty (className === "MessageEmpty") for any ID that no
+// longer exists on the server. This predicate is the single place we trust
+// that runtime quirk.
+export function isMessageEmpty(msg: unknown): boolean {
+	if (msg === null || msg === undefined) return true
+	return (
+		typeof msg === "object" &&
+		"className" in msg &&
+		msg.className === "MessageEmpty"
+	)
+}
 
 export interface ReconcileOptions {
 	client: TelegramClient
@@ -15,6 +29,7 @@ export interface ReconcileOptions {
 async function reconcileChat(
 	deps: { client: TelegramClient; db: DbApi; logger: Logger },
 	chatId: string,
+	signal: AbortSignal,
 ): Promise<void> {
 	const { client, db, logger } = deps
 
@@ -30,15 +45,16 @@ async function reconcileChat(
 	const missing: number[] = []
 
 	for (let i = 0; i < liveIds.length; i += BATCH_SIZE) {
+		if (signal.aborted) {
+			logger.info({ chat: chatId, scanned: i }, "chat reconcile aborted")
+			return
+		}
 		const batch = liveIds.slice(i, i + BATCH_SIZE)
-		const messages = (await client.getMessages(peerId, {
-			ids: batch,
-		})) as Array<{ className?: string } | undefined>
+		const messages = await client.getMessages(peerId, { ids: batch })
 
 		for (let j = 0; j < batch.length; j++) {
 			const msgId = batch[j]
-			const msg = messages[j]
-			if (msgId !== undefined && (!msg || msg.className === "MessageEmpty")) {
+			if (msgId !== undefined && isMessageEmpty(messages[j])) {
 				missing.push(msgId)
 			}
 		}
@@ -71,8 +87,15 @@ async function reconcileOnce(
 			return
 		}
 		try {
-			await reconcileChat(deps, chatId)
+			await reconcileChat(deps, chatId, signal)
 		} catch (err) {
+			if (err instanceof FloodWaitError) {
+				logger.warn(
+					{ chat: chatId, waitSeconds: err.seconds },
+					"FloodWait — ending reconcile pass early; next interval will retry",
+				)
+				return
+			}
 			logger.warn({ chat: chatId, err }, "reconcile chat failed")
 		}
 	}
