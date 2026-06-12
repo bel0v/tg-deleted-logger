@@ -1,6 +1,11 @@
 # tg-deleted-logger
 
-Self-hosted Telegram userbot that captures every incoming DM and preserves messages the sender later deletes or silently edits.
+Self-hosted Telegram userbot that watches your incoming DMs and **forwards every edit and deletion to a Telegram chat of your choice**, with the original content (text, photos, voice notes, video — including "view once" media) attached. Two detection paths:
+
+- **Live** — Telegram's `EditedMessage` / `DeletedMessage` push update.
+- **Reconciliation** — every 10 min the bot diffs its in-memory cache against Telegram's view and catches anything Telegram quietly forgot to tell it about.
+
+The local cache lives in RAM only and is purged after 24 hours by default. **Telegram is your archive.**
 
 ## Prerequisites
 
@@ -31,7 +36,17 @@ Smoke-test against your account:
 npm run dev
 ```
 
-Send yourself a message from another account, then edit and delete it. You should see `event=new` → `event=edit` → `event=delete` log lines.
+Send yourself a message from another account, then edit and delete it. You should see `event=new` → `event=edit` → `event=delete` log lines, and notifications arrive in your Saved Messages (the default target).
+
+## Notification target
+
+By default, notifications go to your own **Saved Messages** (`TG_NOTIFY_CHAT_ID=me`). For a cleaner experience, send them to a **dedicated private channel** so they don't mix with your real saved content:
+
+1. In Telegram, create a new private channel (yourself as the only member).
+2. Add your userbot account to it as an admin.
+3. Find the channel's numeric ID — Telegram desktop's dev console or a bot like `@username_to_id_bot` works. The value looks like `-1001234567890`.
+4. Set `TG_NOTIFY_CHAT_ID=-1001234567890` in `/etc/tg-logger.env`.
+5. Restart: `sudo systemctl restart tg-logger`.
 
 ## Server deployment
 
@@ -75,7 +90,7 @@ sudo systemctl enable --now nftables
 Verify by trying to `curl -m 3 https://example.com` as `tglogger` — it should hang and time out:
 
 ```bash
-sudo -u tglogger curl -m 3 https://example.com   # should fail
+sudo -u tglogger curl -m 3 https://example.com    # should fail
 sudo -u tglogger curl -m 3 https://149.154.167.50  # should succeed
 ```
 
@@ -96,9 +111,11 @@ sudo chmod 600 /etc/credstore.encrypted/tg-session
 sudo tee /etc/tg-logger.env >/dev/null <<EOF
 TG_API_ID=...
 TG_API_HASH=...
-# Optional. Defaults: 600000 ms (10 min) reconcile, 90 day retention.
-# TG_RECONCILE_INTERVAL_MS=600000
-# TG_RETENTION_DAYS=90
+TG_NOTIFY_CHAT_ID=me              # or -1001234567890 for a dedicated channel
+# Optional. Defaults shown below.
+# TG_MEDIA_DIR=/opt/tg-logger/data/media
+# TG_RECONCILE_INTERVAL_MS=600000  # 10 min
+# TG_RETENTION_DAYS=1
 # LOG_LEVEL=info
 EOF
 sudo chmod 600 /etc/tg-logger.env
@@ -113,7 +130,7 @@ sudo systemctl enable --now tg-logger
 journalctl -u tg-logger -f
 ```
 
-You should see `connected` and `reconcile loop started` within a few seconds.
+You should see `connected`, `notifier ready`, `reconcile loop started`, and `retention loop started` within a few seconds.
 
 ### Subsequent deploys
 
@@ -125,6 +142,39 @@ sudo -u tglogger /opt/tg-logger/scripts/deploy.sh
 
 The script does `git pull --ff-only && npm ci && npm run build && systemctl restart tg-logger` and prints the unit status at the end.
 
+## How notifications look
+
+**Text deletion:**
+```
+🗑️ Deleted by John Doe
+
+Hey, just kidding about Mondays
+```
+
+**Silent (reconciler-detected) deletion:**
+```
+🗑️ Deleted by John Doe (silent)
+
+Hey, just kidding about Mondays
+```
+
+**View-once media deletion** (the highest-value capture case):
+```
+[forwarded photo / video / voice]
+🗑️ 🔥 view-once Deleted by John Doe
+```
+
+**Edit:**
+```
+✏️ Edited by John Doe
+
+— before —
+I hate Mondays
+
+— after —
+I love Mondays
+```
+
 ## Operations
 
 **Tail live logs:**
@@ -133,26 +183,15 @@ The script does `git pull --ff-only && npm ci && npm run build && systemctl rest
 journalctl -u tg-logger -f
 ```
 
-**Query deletions:**
+Useful events to grep for:
 
 ```bash
-sudo -u tglogger sqlite3 /opt/tg-logger/data/messages.db \
-  "SELECT m.msg_id, m.text, u.first_name, m.deleted_at
-   FROM messages m
-   LEFT JOIN users u ON u.user_id = m.sender_id
-   WHERE m.deleted_at IS NOT NULL
-   ORDER BY m.deleted_at DESC
-   LIMIT 50"
+journalctl -u tg-logger -o json | jq 'select(.MESSAGE | fromjson | .event == "delete")'
+journalctl -u tg-logger | grep "FloodWait"
+journalctl -u tg-logger | grep "media download failed"
 ```
 
-**Inspect edit history:**
-
-```bash
-sudo -u tglogger sqlite3 /opt/tg-logger/data/messages.db \
-  "SELECT msg_id, text, observed_at FROM message_revisions ORDER BY observed_at DESC LIMIT 20"
-```
-
-**Rotate the session** (if it leaks or you want to force re-auth):
+**Rotate the session** (if it leaks, or to force re-auth):
 
 1. Generate a new session locally: `npm run login`
 2. On the server:

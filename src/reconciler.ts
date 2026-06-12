@@ -1,8 +1,9 @@
 import type { TelegramClient } from "telegram"
 import { FloodWaitError } from "telegram/errors/index.js"
 
-import type { CacheApi } from "./cache.ts"
+import { type CacheApi, displayName } from "./cache.ts"
 import type { Logger } from "./logger.ts"
+import type { Notifier } from "./notifier.ts"
 
 const BATCH_SIZE = 100
 
@@ -23,6 +24,7 @@ export interface ReconcileOptions {
 	client: TelegramClient
 	cache: CacheApi
 	logger: Logger
+	notifier: Notifier
 	intervalMs: number
 }
 
@@ -30,6 +32,7 @@ interface ReconcileDeps {
 	client: TelegramClient
 	cache: CacheApi
 	logger: Logger
+	notifier: Notifier
 }
 
 async function reconcileChat(
@@ -37,7 +40,7 @@ async function reconcileChat(
 	chatId: string,
 	signal: AbortSignal,
 ): Promise<void> {
-	const { client, cache, logger } = deps
+	const { client, cache, logger, notifier } = deps
 
 	const liveIds = cache.listLiveMessageIds(chatId)
 	if (liveIds.length === 0) return
@@ -70,11 +73,20 @@ async function reconcileChat(
 
 	const results = cache.markDeleted(missing, Date.now())
 	for (const r of results) {
-		if (r.matched) {
-			logger.info(
-				{ event: "delete", id: r.msg_id, chat: chatId, via: "reconcile" },
-				"silent deletion detected",
-			)
+		if (!r.matched) continue
+		const snapshot = cache.getMessage(r.msg_id)
+		const sender = snapshot?.sender ? displayName(snapshot.sender) : "(unknown)"
+		logger.info(
+			{ event: "delete", id: r.msg_id, chat: chatId, via: "reconcile" },
+			"silent deletion detected",
+		)
+		if (snapshot) {
+			void notifier.notifyDelete({
+				msgId: r.msg_id,
+				sender,
+				snapshot,
+				via: "reconcile",
+			})
 		}
 	}
 }
@@ -110,8 +122,8 @@ async function reconcileOnce(
 export function startReconcileLoop(
 	opts: ReconcileOptions,
 ): () => Promise<void> {
-	const { client, cache, logger, intervalMs } = opts
-	const deps: ReconcileDeps = { client, cache, logger }
+	const { client, cache, logger, notifier, intervalMs } = opts
+	const deps: ReconcileDeps = { client, cache, logger, notifier }
 	const controller = new AbortController()
 	let inFlight: Promise<void> | null = null
 

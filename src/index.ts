@@ -19,11 +19,13 @@ import {
 } from "./constants.ts"
 import { createLogger, type Logger } from "./logger.ts"
 import { downloadMessageMedia, isViewOnce, shouldDownload } from "./media.ts"
+import { createNotifier, type Notifier } from "./notifier.ts"
 import { startReconcileLoop } from "./reconciler.ts"
 import { startRetentionLoop } from "./retention.ts"
 import { registerShutdown } from "./shutdown.ts"
 
 const DEFAULT_MEDIA_DIR = "data/media"
+const DEFAULT_NOTIFY_TARGET = "me"
 
 function upsertAndDisplaySender(
 	cache: CacheApi,
@@ -61,11 +63,12 @@ interface HandlerDeps {
 	client: TelegramClient
 	cache: CacheApi
 	logger: Logger
+	notifier: Notifier
 	mediaDir: string
 }
 
 function registerHandlers(deps: HandlerDeps): void {
-	const { client, cache, logger, mediaDir } = deps
+	const { client, cache, logger, notifier, mediaDir } = deps
 
 	client.addEventHandler(
 		(event: NewMessageEvent) => {
@@ -133,6 +136,16 @@ function registerHandlers(deps: HandlerDeps): void {
 				},
 				"edited message",
 			)
+
+			if (outcome.kind === "revised") {
+				void notifier.notifyEdit({
+					msgId: msg.id,
+					chatId,
+					sender: from,
+					before: outcome.before,
+					after: msg.message || null,
+				})
+			}
 		},
 		new EditedMessage({ incoming: true }),
 	)
@@ -146,6 +159,14 @@ function registerHandlers(deps: HandlerDeps): void {
 				{ event: "delete", id: r.msg_id, matched: r.matched, from },
 				r.matched ? "deletion marked" : "deletion without prior message",
 			)
+			if (r.matched && snapshot) {
+				void notifier.notifyDelete({
+					msgId: r.msg_id,
+					sender: from,
+					snapshot,
+					via: "event",
+				})
+			}
 		}
 	}, new DeletedMessage({}))
 }
@@ -177,7 +198,16 @@ async function main(): Promise<void> {
 	await client.invoke(new Api.account.UpdateStatus({ offline: true }))
 
 	const mediaDir = process.env.TG_MEDIA_DIR ?? DEFAULT_MEDIA_DIR
-	registerHandlers({ client, cache, logger, mediaDir })
+	const notifyTarget = process.env.TG_NOTIFY_CHAT_ID ?? DEFAULT_NOTIFY_TARGET
+	const notifier = createNotifier({
+		client,
+		logger,
+		target: notifyTarget,
+		mediaDir,
+	})
+	logger.info({ notifyTarget, mediaDir }, "notifier ready")
+
+	registerHandlers({ client, cache, logger, notifier, mediaDir })
 
 	const reconcileIntervalMs = parseIntervalMs(
 		process.env.TG_RECONCILE_INTERVAL_MS,
@@ -187,6 +217,7 @@ async function main(): Promise<void> {
 		client,
 		cache,
 		logger,
+		notifier,
 		intervalMs: reconcileIntervalMs,
 	})
 	const stopRetention = startRetentionLoop({ logger, cache, mediaDir })
