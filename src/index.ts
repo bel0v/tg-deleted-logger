@@ -1,4 +1,5 @@
 import { Api, TelegramClient } from "telegram"
+import type { Entity } from "telegram/define.js"
 import {
 	DeletedMessage,
 	type DeletedMessageEvent,
@@ -12,13 +13,36 @@ import { NewMessage } from "telegram/events/index.js"
 import { StringSession } from "telegram/sessions/index.js"
 
 import { loadConfig } from "./config.ts"
-import { closeDb, insertMessage, markDeleted, recordEdit } from "./db.ts"
+import {
+	closeDb,
+	displayName,
+	getMessageSender,
+	insertMessage,
+	markDeleted,
+	recordEdit,
+	upsertUser,
+} from "./db.ts"
 import { logger } from "./logger.ts"
 import { startReconcileLoop } from "./reconciler.ts"
 
 const DEFAULT_RECONCILE_INTERVAL_MS = 10 * 60 * 1000
 const MIN_RECONCILE_INTERVAL_MS = 1000
 const SHUTDOWN_TIMEOUT_MS = 10_000
+
+function recordSender(sender: Entity | undefined): string {
+	if (!(sender instanceof Api.User)) return "(unknown)"
+	const identity = {
+		username: sender.username ?? null,
+		first_name: sender.firstName ?? null,
+		last_name: sender.lastName ?? null,
+	}
+	upsertUser({
+		user_id: sender.id.toString(),
+		...identity,
+		updated_at: Date.now(),
+	})
+	return displayName(identity)
+}
 
 function parseIntervalMs(raw: string | undefined): number {
 	if (raw === undefined) {
@@ -53,6 +77,8 @@ async function main(): Promise<void> {
 		(event: NewMessageEvent) => {
 			const msg = event.message
 			const chatId = msg.chatId?.toString() ?? "unknown"
+			const from = recordSender(msg.sender)
+
 			const inserted = insertMessage({
 				chat_id: chatId,
 				msg_id: msg.id,
@@ -63,7 +89,7 @@ async function main(): Promise<void> {
 				received_at: Date.now(),
 			})
 			logger.info(
-				{ event: "new", chat: chatId, id: msg.id, stored: inserted },
+				{ event: "new", chat: chatId, id: msg.id, from, stored: inserted },
 				"new message",
 			)
 		},
@@ -74,6 +100,8 @@ async function main(): Promise<void> {
 		(event: EditedMessageEvent) => {
 			const msg = event.message
 			const chatId = msg.chatId?.toString() ?? "unknown"
+			const from = recordSender(msg.sender)
+
 			const outcome = recordEdit({
 				chat_id: chatId,
 				msg_id: msg.id,
@@ -84,7 +112,7 @@ async function main(): Promise<void> {
 				observed_at: Date.now(),
 			})
 			logger.info(
-				{ event: "edit", chat: chatId, id: msg.id, outcome },
+				{ event: "edit", chat: chatId, id: msg.id, from, outcome },
 				"edited message",
 			)
 		},
@@ -94,8 +122,10 @@ async function main(): Promise<void> {
 	client.addEventHandler((event: DeletedMessageEvent) => {
 		const results = markDeleted(event.deletedIds, Date.now())
 		for (const r of results) {
+			const sender = r.matched ? getMessageSender(r.msg_id) : undefined
+			const from = sender ? displayName(sender) : "(unknown)"
 			logger.info(
-				{ event: "delete", id: r.msg_id, matched: r.matched },
+				{ event: "delete", id: r.msg_id, matched: r.matched, from },
 				r.matched ? "deletion marked" : "deletion without prior message",
 			)
 		}

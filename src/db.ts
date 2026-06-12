@@ -32,6 +32,14 @@ db.exec(`
 		PRIMARY KEY (chat_id, msg_id, observed_at)
 	);
 	CREATE INDEX IF NOT EXISTS idx_revisions_msg_id ON message_revisions(msg_id);
+
+	CREATE TABLE IF NOT EXISTS users (
+		user_id    TEXT    PRIMARY KEY,
+		username   TEXT,
+		first_name TEXT,
+		last_name  TEXT,
+		updated_at INTEGER NOT NULL
+	);
 `)
 
 export interface InsertParams {
@@ -142,6 +150,53 @@ export function listLiveMessageIds(chatId: string): number[] {
 
 export function closeDb(): void {
 	db.close()
+}
+
+export interface UpsertUserParams {
+	user_id: string
+	username: string | null
+	first_name: string | null
+	last_name: string | null
+	updated_at: number
+}
+
+const upsertUserStmt = db.prepare<UpsertUserParams>(`
+	INSERT INTO users (user_id, username, first_name, last_name, updated_at)
+	VALUES (@user_id, @username, @first_name, @last_name, @updated_at)
+	ON CONFLICT(user_id) DO UPDATE SET
+		username   = excluded.username,
+		first_name = excluded.first_name,
+		last_name  = excluded.last_name,
+		updated_at = excluded.updated_at
+`)
+
+export function upsertUser(params: UpsertUserParams): void {
+	upsertUserStmt.run(params)
+}
+
+export interface UserIdentity {
+	username: string | null
+	first_name: string | null
+	last_name: string | null
+}
+
+export function displayName(u: UserIdentity): string {
+	const full = [u.first_name, u.last_name].filter(Boolean).join(" ").trim()
+	if (full) return full
+	if (u.username) return `@${u.username}`
+	return "(unknown)"
+}
+
+const getMessageSenderStmt = db.prepare<{ msg_id: number }>(`
+	SELECT u.username, u.first_name, u.last_name
+	FROM messages m
+	LEFT JOIN users u ON u.user_id = m.sender_id
+	WHERE m.msg_id = @msg_id
+	LIMIT 1
+`)
+
+export function getMessageSender(msgId: number): UserIdentity | undefined {
+	return getMessageSenderStmt.get({ msg_id: msgId }) as UserIdentity | undefined
 }
 
 export const recordEdit = db.transaction((params: EditParams): EditOutcome => {
