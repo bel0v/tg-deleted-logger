@@ -94,11 +94,14 @@ sudo cp /opt/tg-logger/deploy/firewall.nft /etc/nftables.conf
 sudo systemctl enable --now nftables
 ```
 
-Verify by trying to `curl -m 3 https://example.com` as `tglogger` — it should hang and time out:
+Verify the firewall using bash's built-in `/dev/tcp` (no install needed) — tests TCP reachability without involving TLS:
 
 ```bash
-sudo -u tglogger curl -m 3 https://example.com    # should fail
-sudo -u tglogger curl -m 3 https://149.154.167.50  # should succeed
+# Should print OK — Telegram allowed
+sudo -u tglogger timeout 2 bash -c 'exec 3<>/dev/tcp/149.154.167.50/443' && echo OK
+
+# Should print "blocked (good)" — anything else dropped
+sudo -u tglogger timeout 2 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' && echo BAD || echo "blocked (good)"
 ```
 
 **5. Mount the session as an encrypted systemd credential.**

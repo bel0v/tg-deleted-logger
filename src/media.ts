@@ -32,7 +32,10 @@ export function isViewOnce(message: Api.Message): boolean {
 		media instanceof Api.MessageMediaPhoto ||
 		media instanceof Api.MessageMediaDocument
 	) {
-		return media.ttlSeconds !== undefined
+		// Voice messages and video notes carry ttl_seconds = 0 by default from
+		// Telegram even when they're not view-once. Real view-once messages have
+		// a positive TTL (often 2147483647 for "until viewed").
+		return typeof media.ttlSeconds === "number" && media.ttlSeconds > 0
 	}
 	return false
 }
