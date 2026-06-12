@@ -1,7 +1,7 @@
 import type { TelegramClient } from "telegram"
 import { FloodWaitError } from "telegram/errors/index.js"
 
-import type { DbApi } from "./db.ts"
+import type { CacheApi } from "./cache.ts"
 import type { Logger } from "./logger.ts"
 
 const BATCH_SIZE = 100
@@ -21,19 +21,25 @@ export function isMessageEmpty(msg: unknown): boolean {
 
 export interface ReconcileOptions {
 	client: TelegramClient
-	db: DbApi
+	cache: CacheApi
 	logger: Logger
 	intervalMs: number
 }
 
+interface ReconcileDeps {
+	client: TelegramClient
+	cache: CacheApi
+	logger: Logger
+}
+
 async function reconcileChat(
-	deps: { client: TelegramClient; db: DbApi; logger: Logger },
+	deps: ReconcileDeps,
 	chatId: string,
 	signal: AbortSignal,
 ): Promise<void> {
-	const { client, db, logger } = deps
+	const { client, cache, logger } = deps
 
-	const liveIds = db.listLiveMessageIds(chatId)
+	const liveIds = cache.listLiveMessageIds(chatId)
 	if (liveIds.length === 0) return
 
 	const peerId = Number(chatId)
@@ -62,7 +68,7 @@ async function reconcileChat(
 
 	if (missing.length === 0) return
 
-	const results = db.markDeleted(missing, Date.now())
+	const results = cache.markDeleted(missing, Date.now())
 	for (const r of results) {
 		if (r.matched) {
 			logger.info(
@@ -74,11 +80,11 @@ async function reconcileChat(
 }
 
 async function reconcileOnce(
-	deps: { client: TelegramClient; db: DbApi; logger: Logger },
+	deps: ReconcileDeps,
 	signal: AbortSignal,
 ): Promise<void> {
-	const { db, logger } = deps
-	const chats = db.listChatsWithLiveMessages()
+	const { cache, logger } = deps
+	const chats = cache.listChatsWithLiveMessages()
 	logger.debug({ chats: chats.length }, "reconcile pass start")
 
 	for (const chatId of chats) {
@@ -104,8 +110,8 @@ async function reconcileOnce(
 export function startReconcileLoop(
 	opts: ReconcileOptions,
 ): () => Promise<void> {
-	const { client, db, logger, intervalMs } = opts
-	const deps = { client, db, logger }
+	const { client, cache, logger, intervalMs } = opts
+	const deps: ReconcileDeps = { client, cache, logger }
 	const controller = new AbortController()
 	let inFlight: Promise<void> | null = null
 
@@ -122,6 +128,7 @@ export function startReconcileLoop(
 
 	tick()
 	const handle = setInterval(tick, intervalMs)
+	logger.info({ intervalMs }, "reconcile loop started")
 
 	return async (): Promise<void> => {
 		controller.abort()
