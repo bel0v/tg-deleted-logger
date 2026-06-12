@@ -11,7 +11,7 @@ The local cache lives in RAM only and is purged after 24 hours by default. **Tel
 
 ## Prerequisites
 
-- Node.js **>= 24** (the systemd unit assumes `/usr/bin/node`)
+- Node.js **>= 22** (the systemd unit assumes `/usr/bin/node`)
 - Telegram API credentials from [my.telegram.org](https://my.telegram.org) → API development tools
 - A Linux box with `systemd` and `nftables` for the production deploy
 
@@ -56,10 +56,10 @@ By default, notifications go to **Saved Messages** of the account the userbot is
 
 Run these as root on a fresh Linux box (Debian/Ubuntu assumed).
 
-**1. Install Node 24 and nftables.**
+**1. Install Node 22 and nftables.**
 
 ```bash
-curl -fsSL https://deb.nodesource.com/setup_24.x | sudo bash -
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -
 sudo apt-get install -y nodejs nftables
 ```
 
