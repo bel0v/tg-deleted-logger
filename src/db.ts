@@ -16,6 +16,7 @@ db.exec(`
 		sender_id   TEXT,
 		text        TEXT,
 		media_kind  TEXT,
+		sent_at     INTEGER,
 		received_at INTEGER NOT NULL,
 		deleted_at  INTEGER,
 		PRIMARY KEY (chat_id, msg_id)
@@ -39,14 +40,15 @@ export interface InsertParams {
 	sender_id: string | null
 	text: string | null
 	media_kind: string | null
+	sent_at: number | null
 	received_at: number
 }
 
 const insertStmt = db.prepare<InsertParams>(`
 	INSERT OR IGNORE INTO messages
-		(chat_id, msg_id, sender_id, text, media_kind, received_at)
+		(chat_id, msg_id, sender_id, text, media_kind, sent_at, received_at)
 	VALUES
-		(@chat_id, @msg_id, @sender_id, @text, @media_kind, @received_at)
+		(@chat_id, @msg_id, @sender_id, @text, @media_kind, @sent_at, @received_at)
 `)
 
 export function insertMessage(params: InsertParams): boolean {
@@ -66,18 +68,16 @@ export interface MarkDeletedResult {
 	matched: boolean
 }
 
-export function markDeleted(
-	msgIds: number[],
-	deletedAt: number,
-): MarkDeletedResult[] {
-	return msgIds.map((msg_id) => {
-		const changes = markDeletedStmt.run({
-			msg_id,
-			deleted_at: deletedAt,
-		}).changes
-		return { msg_id, matched: changes > 0 }
-	})
-}
+export const markDeleted = db.transaction(
+	(msgIds: number[], deletedAt: number): MarkDeletedResult[] =>
+		msgIds.map((msg_id) => {
+			const changes = markDeletedStmt.run({
+				msg_id,
+				deleted_at: deletedAt,
+			}).changes
+			return { msg_id, matched: changes > 0 }
+		}),
+)
 
 const getMessageStmt = db.prepare<{ chat_id: string; msg_id: number }>(`
 	SELECT text, media_kind FROM messages
@@ -111,6 +111,7 @@ export interface EditParams {
 	sender_id: string | null
 	text: string | null
 	media_kind: string | null
+	sent_at: number | null
 	observed_at: number
 }
 
@@ -139,6 +140,10 @@ export function listLiveMessageIds(chatId: string): number[] {
 	return rows.map((r) => r.msg_id)
 }
 
+export function closeDb(): void {
+	db.close()
+}
+
 export const recordEdit = db.transaction((params: EditParams): EditOutcome => {
 	const current = getMessageStmt.get({
 		chat_id: params.chat_id,
@@ -152,6 +157,7 @@ export const recordEdit = db.transaction((params: EditParams): EditOutcome => {
 			sender_id: params.sender_id,
 			text: params.text,
 			media_kind: params.media_kind,
+			sent_at: params.sent_at,
 			received_at: params.observed_at,
 		})
 		return "first-seen"

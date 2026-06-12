@@ -24,6 +24,6 @@ function loadSession(): string {
 	const fromEnv = process.env.TG_SESSION
 	if (fromEnv) return fromEnv.trim()
 	throw new Error(
-		"No session found. Run `yarn login` to generate one, then set TG_SESSION (local) or mount via systemd LoadCredentialEncrypted.",
+		"No session found. Run `npm run login` to generate one, then set TG_SESSION (local) or mount via systemd LoadCredentialEncrypted.",
 	)
 }

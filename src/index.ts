@@ -12,11 +12,28 @@ import { NewMessage } from "telegram/events/index.js"
 import { StringSession } from "telegram/sessions/index.js"
 
 import { loadConfig } from "./config.ts"
-import { insertMessage, markDeleted, recordEdit } from "./db.ts"
+import { closeDb, insertMessage, markDeleted, recordEdit } from "./db.ts"
 import { logger } from "./logger.ts"
 import { startReconcileLoop } from "./reconciler.ts"
 
 const DEFAULT_RECONCILE_INTERVAL_MS = 10 * 60 * 1000
+const MIN_RECONCILE_INTERVAL_MS = 1000
+const SHUTDOWN_TIMEOUT_MS = 10_000
+
+function parseIntervalMs(raw: string | undefined): number {
+	if (raw === undefined) {
+		return DEFAULT_RECONCILE_INTERVAL_MS
+	}
+	const parsed = Number(raw)
+	if (!Number.isFinite(parsed) || parsed < MIN_RECONCILE_INTERVAL_MS) {
+		logger.warn(
+			{ raw, fallback: DEFAULT_RECONCILE_INTERVAL_MS },
+			"TG_RECONCILE_INTERVAL_MS invalid, using default",
+		)
+		return DEFAULT_RECONCILE_INTERVAL_MS
+	}
+	return parsed
+}
 
 async function main(): Promise<void> {
 	const config = loadConfig()
@@ -42,6 +59,7 @@ async function main(): Promise<void> {
 				sender_id: msg.senderId?.toString() ?? null,
 				text: msg.message || null,
 				media_kind: msg.media?.className ?? null,
+				sent_at: msg.date ? msg.date * 1000 : null,
 				received_at: Date.now(),
 			})
 			logger.info(
@@ -62,6 +80,7 @@ async function main(): Promise<void> {
 				sender_id: msg.senderId?.toString() ?? null,
 				text: msg.message || null,
 				media_kind: msg.media?.className ?? null,
+				sent_at: msg.date ? msg.date * 1000 : null,
 				observed_at: Date.now(),
 			})
 			logger.info(
@@ -82,16 +101,40 @@ async function main(): Promise<void> {
 		}
 	}, new DeletedMessage({}))
 
-	const intervalMs = Number(
-		process.env.TG_RECONCILE_INTERVAL_MS ?? DEFAULT_RECONCILE_INTERVAL_MS,
-	)
+	const intervalMs = parseIntervalMs(process.env.TG_RECONCILE_INTERVAL_MS)
 	const stopReconcile = startReconcileLoop(client, intervalMs)
 	logger.info({ intervalMs }, "reconcile loop started")
 
+	let shuttingDown = false
 	const shutdown = async (signal: string): Promise<void> => {
+		if (shuttingDown) {
+			logger.warn({ signal }, "shutdown already in progress, ignoring signal")
+			return
+		}
+		shuttingDown = true
 		logger.info({ signal }, "shutdown")
-		await stopReconcile()
-		await client.disconnect()
+
+		const cleanup = async (): Promise<"ok"> => {
+			await stopReconcile()
+			await client.disconnect()
+			closeDb()
+			return "ok"
+		}
+
+		const timeout = new Promise<"timeout">((resolve) => {
+			setTimeout(() => {
+				resolve("timeout")
+			}, SHUTDOWN_TIMEOUT_MS)
+		})
+
+		const winner = await Promise.race([cleanup(), timeout])
+		if (winner === "timeout") {
+			logger.error(
+				{ timeoutMs: SHUTDOWN_TIMEOUT_MS },
+				"shutdown timed out, forcing exit",
+			)
+			process.exit(1)
+		}
 		process.exit(0)
 	}
 	process.on("SIGINT", () => {
@@ -101,6 +144,15 @@ async function main(): Promise<void> {
 		void shutdown("SIGTERM")
 	})
 }
+
+process.on("uncaughtException", (err: Error) => {
+	logger.fatal({ err }, "uncaughtException")
+	process.exit(1)
+})
+process.on("unhandledRejection", (reason: unknown) => {
+	logger.fatal({ reason }, "unhandledRejection")
+	process.exit(1)
+})
 
 main().catch((err: unknown) => {
 	logger.fatal({ err }, "main loop crashed")
