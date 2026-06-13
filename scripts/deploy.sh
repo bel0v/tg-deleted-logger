@@ -16,5 +16,7 @@ sudo bash -c '
 	chown -R tglogger:tglogger .
 '
 
+DEPLOYED_SHA=$(sudo git -C /opt/tg-logger -c safe.directory=/opt/tg-logger rev-parse --short HEAD)
+sudo logger -t tg-deploy "restarting tg-logger after deploy ($DEPLOYED_SHA)"
 sudo systemctl restart tg-logger
 sudo systemctl status tg-logger --no-pager

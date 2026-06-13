@@ -136,6 +136,12 @@ function registerHandlers(deps: HandlerDeps): void {
 				sent_at: msg.date ? msg.date * 1000 : null,
 				observed_at: Date.now(),
 			})
+
+			// Telegram fires EditedMessage for reactions, pin/unpin, formatting-
+			// only changes, etc. — none of which we notify on. Skip the log too
+			// so it doesn't bury the actual revisions.
+			if (outcome.kind === "no-change") return
+
 			logger.info(
 				{
 					event: "edit",
