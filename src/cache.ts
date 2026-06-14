@@ -62,6 +62,7 @@ export interface CacheApi {
 	markDeleted(msgIds: number[], deletedAt: number): MarkDeletedResult[]
 	recordEdit(params: EditParams): EditOutcome
 	upsertUser(params: UpsertUserParams): void
+	getUserById(userId: string): UserIdentity | undefined
 	getMessage(msgId: number): MessageSnapshot | undefined
 	setMediaPath(chatId: string, msgId: number, path: string): void
 	listChatsWithLiveMessages(): string[]
@@ -220,6 +221,7 @@ export function createCache(): CacheApi {
 		markDeleted,
 		recordEdit,
 		upsertUser,
+		getUserById: (userId) => users.get(userId),
 		getMessage,
 		setMediaPath,
 		listChatsWithLiveMessages,
