@@ -3,9 +3,9 @@ set -euo pipefail
 
 # Runs as a sudo-enabled user (NOT as tglogger).
 #
-# The tglogger user is firewalled to Telegram DCs only and can't reach
-# github / registry.npmjs.org, so the code-update steps run as root
-# (unrestricted outbound) and chown back to tglogger at the end.
+# The code-update steps run as root and chown back to tglogger at the end
+# (keeps file ownership consistent after npm ci). The systemd egress sandbox
+# confines only the running service, not this deploy or a tglogger shell.
 
 sudo bash -c '
 	set -euo pipefail

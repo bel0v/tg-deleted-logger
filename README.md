@@ -13,7 +13,7 @@ The local cache lives in RAM only and is purged after 24 hours by default. **Tel
 
 - Node.js **>= 22** (the systemd unit assumes `/usr/bin/node`)
 - Telegram API credentials from [my.telegram.org](https://my.telegram.org) → API development tools
-- A Linux box with `systemd` and `nftables` for the production deploy
+- A Linux box with `systemd` (v247+, for the built-in egress sandbox) for the production deploy
 
 ## Local setup (development)
 
@@ -56,11 +56,11 @@ By default, notifications go to **Saved Messages** of the account the userbot is
 
 Run these as root on a fresh Linux box (Debian/Ubuntu assumed).
 
-**1. Install Node 22 and nftables.**
+**1. Install Node 22.**
 
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -
-sudo apt-get install -y nodejs nftables
+sudo apt-get install -y nodejs
 ```
 
 **2. Create an unprivileged user and an empty working dir.**
@@ -85,24 +85,23 @@ sudo -u tglogger npm run build
 
 `data/` holds downloaded media files. The systemd unit's `ReadWritePaths=` directive requires it to exist at service-start time.
 
-**4. Apply the firewall.**
+**4. Preflight: confirm the egress sandbox is enforced on this host.**
 
-Locks the `tglogger` user's outbound to Telegram DCs + DNS only. Root and the SSH user keep normal outbound so deploys work — see [Applying updates](#applying-updates) below for how the deploy script works around the restriction.
+Containment lives in the systemd unit (step 7): `IPAddressDeny/Allow` confine the running process — and anything it spawns — to Telegram's DC ranges + a pinned DNS resolver, enforced per-cgroup via eBPF.
 
-```bash
-sudo cp /opt/tg-logger/deploy/firewall.nft /etc/nftables.conf
-sudo systemctl enable --now nftables
-```
-
-Verify the firewall using bash's built-in `/dev/tcp` (no install needed) — tests TCP reachability without involving TLS:
+That enforcement needs cgroup-v2 + `CONFIG_CGROUP_BPF` (default on Ubuntu 22.04+/any modern kernel). Confirm it works here with a throwaway scope using the same policy, tested via bash's built-in `/dev/tcp` (no TLS, no installs):
 
 ```bash
 # Should print OK — Telegram allowed
-sudo -u tglogger timeout 2 bash -c 'exec 3<>/dev/tcp/149.154.167.50/443' && echo OK
+sudo systemd-run -q --wait --pipe -p IPAddressDeny=any -p 'IPAddressAllow=149.154.160.0/20' \
+  bash -c 'exec 3<>/dev/tcp/149.154.167.50/443' && echo OK
 
 # Should print "blocked (good)" — anything else dropped
-sudo -u tglogger timeout 2 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' && echo BAD || echo "blocked (good)"
+sudo systemd-run -q --wait --pipe -p IPAddressDeny=any -p 'IPAddressAllow=149.154.160.0/20' \
+  bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' && echo BAD || echo "blocked (good)"
 ```
+
+If the second command prints `BAD`, your kernel/systemd isn't enforcing egress filtering (very old kernel or systemd < 247) — upgrade, or add your own host firewall before relying on this.
 
 **5. Mount the session as an encrypted systemd credential.**
 
@@ -147,7 +146,9 @@ To pull the latest code onto a running server, run from a sudo-enabled user (not
 /opt/tg-logger/scripts/deploy.sh
 ```
 
-The script runs `git pull --ff-only && npm ci && npm run build` **as root** — because the firewall (step 4) blocks `tglogger` from reaching github.com and `registry.npmjs.org`, and only root has unrestricted outbound. It then `chown -R tglogger:tglogger`s the working dir back so the service can read it, and finally `systemctl restart tg-logger`. It prompts for sudo once and prints `systemctl status` at the end.
+The script runs `git pull --ff-only && npm ci && npm run build` **as root**, then `chown -R tglogger:tglogger`s the working dir back so the service can read it, and finally `systemctl restart tg-logger`. It prompts for sudo once and prints `systemctl status` at the end.
+
+Running as root just keeps file ownership consistent after `npm ci`; the egress sandbox confines only the running service, not this deploy.
 
 Confirm the service came back up cleanly:
 

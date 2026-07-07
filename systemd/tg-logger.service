@@ -15,11 +15,54 @@ RestartSec=5
 StartLimitBurst=5
 StartLimitIntervalSec=120
 
+# ── Egress sandbox ───────────────────────────────────────────────────────────
+# Confine this service — the process and anything it spawns — to Telegram's DC
+# ranges plus a pinned public DNS resolver, enforced per-cgroup via eBPF. If the
+# userbot process is compromised it cannot exfiltrate anywhere but Telegram.
+#
+# Machine-agnostic: DNS is pinned below (see BindReadOnlyPaths), so this list
+# never depends on the host's own resolver address.
+#
+# Telegram DC ranges: https://core.telegram.org/resources/cidr.txt
+# Stable since ~2018; refresh periodically.
+#
+# NOTE: eBPF egress filtering needs cgroup-v2 + CONFIG_CGROUP_BPF (default on
+# Ubuntu 22.04+/any modern kernel). Without it systemd logs a warning and does
+# NOT enforce — the README's preflight check catches that case.
+IPAddressDeny=any
+IPAddressAllow=1.1.1.1 1.0.0.1
+IPAddressAllow=91.105.192.0/23 91.108.4.0/22 91.108.8.0/22 91.108.12.0/22 91.108.16.0/22 91.108.56.0/22 95.161.64.0/20 149.154.160.0/20
+
+# Pin the resolver so the allow-list above is host-independent.
+BindReadOnlyPaths=/opt/tg-logger/deploy/resolv.conf:/etc/resolv.conf
+
+# ── Filesystem / privilege hardening ─────────────────────────────────────────
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=/opt/tg-logger/data
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+UMask=0077
+# Client-only workload: never needs to listen or use exotic socket families.
+SocketBindDeny=any
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# NB: MemoryDenyWriteExecute is intentionally NOT set — it breaks V8's JIT.
 
 [Install]
 WantedBy=multi-user.target
