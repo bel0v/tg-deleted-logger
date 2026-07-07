@@ -16,6 +16,14 @@ sudo bash -c '
 	chown -R tglogger:tglogger .
 '
 
+# Sync the systemd unit if it changed in the repo, so unit edits actually take
+# effect (git pull alone leaves /etc/systemd/system/ stale).
+if ! sudo cmp -s /opt/tg-logger/systemd/tg-logger.service /etc/systemd/system/tg-logger.service; then
+	echo "systemd unit changed — reinstalling"
+	sudo cp /opt/tg-logger/systemd/tg-logger.service /etc/systemd/system/tg-logger.service
+	sudo systemctl daemon-reload
+fi
+
 DEPLOYED_SHA=$(sudo git -C /opt/tg-logger -c safe.directory=/opt/tg-logger rev-parse --short HEAD)
 sudo logger -t tg-deploy "restarting tg-logger after deploy ($DEPLOYED_SHA)"
 sudo systemctl restart tg-logger

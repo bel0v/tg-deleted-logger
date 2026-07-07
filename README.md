@@ -146,7 +146,7 @@ To pull the latest code onto a running server, run from a sudo-enabled user (not
 /opt/tg-logger/scripts/deploy.sh
 ```
 
-The script runs `git pull --ff-only && npm ci && npm run build` **as root**, then `chown -R tglogger:tglogger`s the working dir back so the service can read it, and finally `systemctl restart tg-logger`. It prompts for sudo once and prints `systemctl status` at the end.
+The script runs `git pull --ff-only && npm ci && npm run build` **as root**, then `chown -R tglogger:tglogger`s the working dir back so the service can read it. If the systemd unit changed in the repo it reinstalls it and runs `daemon-reload`, then finally `systemctl restart tg-logger`. It prompts for sudo once and prints `systemctl status` at the end.
 
 Running as root just keeps file ownership consistent after `npm ci`; the egress sandbox confines only the running service, not this deploy.
 
