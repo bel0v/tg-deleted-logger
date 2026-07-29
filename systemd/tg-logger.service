@@ -2,6 +2,8 @@
 Description=Telegram deleted-message logger
 After=network-online.target
 Wants=network-online.target
+StartLimitBurst=5
+StartLimitIntervalSec=120
 
 [Service]
 Type=simple
@@ -12,8 +14,6 @@ LoadCredentialEncrypted=tg-session:/etc/credstore.encrypted/tg-session
 EnvironmentFile=/etc/tg-logger.env
 Restart=always
 RestartSec=5
-StartLimitBurst=5
-StartLimitIntervalSec=120
 
 # ── Egress sandbox ───────────────────────────────────────────────────────────
 # Confine this service — the process and anything it spawns — to Telegram's DC
