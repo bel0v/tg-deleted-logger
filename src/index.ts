@@ -15,6 +15,9 @@ import { loadConfig } from "./config.ts"
 import {
 	DEFAULT_RECONCILE_INTERVAL_MS,
 	MIN_RECONCILE_INTERVAL_MS,
+	WATCHDOG_INTERVAL_MS,
+	WATCHDOG_MAX_FAILURES,
+	WATCHDOG_PROBE_TIMEOUT_MS,
 } from "./constants.ts"
 import { createLogger, type Logger } from "./logger.ts"
 import { downloadMessageMedia, isViewOnce, shouldDownload } from "./media.ts"
@@ -22,6 +25,7 @@ import { createNotifier, type Notifier } from "./notifier.ts"
 import { startReconcileLoop } from "./reconciler.ts"
 import { startRetentionLoop } from "./retention.ts"
 import { registerShutdown } from "./shutdown.ts"
+import { startWatchdog } from "./watchdog.ts"
 
 const DEFAULT_MEDIA_DIR = "data/media"
 const DEFAULT_NOTIFY_TARGET = "me"
@@ -270,8 +274,22 @@ async function main(): Promise<void> {
 		intervalMs: reconcileIntervalMs,
 	})
 	const stopRetention = startRetentionLoop({ logger, cache, mediaDir })
+	const stopWatchdog = startWatchdog({
+		client,
+		logger,
+		intervalMs: WATCHDOG_INTERVAL_MS,
+		probeTimeoutMs: WATCHDOG_PROBE_TIMEOUT_MS,
+		maxFailures: WATCHDOG_MAX_FAILURES,
+		onDead: () => process.exit(1),
+	})
 
-	registerShutdown({ logger, stopReconcile, stopRetention, client })
+	registerShutdown({
+		logger,
+		stopReconcile,
+		stopRetention,
+		stopWatchdog,
+		client,
+	})
 }
 
 main().catch((err: unknown) => {

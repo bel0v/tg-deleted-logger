@@ -6,11 +6,12 @@ interface ShutdownDeps {
 	logger: Logger
 	stopReconcile: () => Promise<void>
 	stopRetention: () => void
+	stopWatchdog: () => void
 	client: TelegramClient
 }
 
 export function registerShutdown(deps: ShutdownDeps): void {
-	const { logger, stopReconcile, stopRetention, client } = deps
+	const { logger, stopReconcile, stopRetention, stopWatchdog, client } = deps
 	let shuttingDown = false
 
 	const shutdown = async (signal: string): Promise<void> => {
@@ -22,6 +23,7 @@ export function registerShutdown(deps: ShutdownDeps): void {
 		logger.info({ signal }, "shutdown")
 
 		const cleanup = async (): Promise<"ok"> => {
+			stopWatchdog()
 			stopRetention()
 			await stopReconcile()
 			await client.disconnect()
